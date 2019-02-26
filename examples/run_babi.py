@@ -35,7 +35,7 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
 from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from pytorch_pretrained_bert.modeling import BertForQuestionAnswering, BertConfig, WEIGHTS_NAME, CONFIG_NAME
+from pytorch_pretrained_bert.modeling import BertForSequenceClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
 from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 from pytorch_pretrained_bert.tokenization import (BasicTokenizer,
                                                   BertTokenizer,
@@ -46,15 +46,21 @@ if sys.version_info[0] == 2:
 else:
     import pickle
 
-from tensorboardX import SummaryWriter
-
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
                     level = logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class SquadExample(object):
+
+def get_vocabs():
+    i2w = json.load(open("idxtoword.json"))
+    i2w = {int(k):v for k,v in i2w.items()}
+    w2i = json.load(open("wordtoidx.json"))
+
+    return i2w, w2i, len(list(i2w.keys()))
+
+class BabiExample(object):
     """
     A single training/test example for the Squad dataset.
     For examples without an answer, the start and end position are -1.
@@ -67,7 +73,8 @@ class SquadExample(object):
                  orig_answer_text=None,
                  start_position=None,
                  end_position=None,
-                 is_impossible=None):
+                 is_impossible=None,
+                 label=None):
         self.qas_id = qas_id
         self.question_text = question_text
         self.doc_tokens = doc_tokens
@@ -75,6 +82,8 @@ class SquadExample(object):
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
+        self.label = label
+        
 
     def __str__(self):
         return self.__repr__()
@@ -91,6 +100,8 @@ class SquadExample(object):
             s += ", end_position: %d" % (self.end_position)
         if self.start_position:
             s += ", is_impossible: %r" % (self.is_impossible)
+        if self.label:
+            s+= ". label: %s" % (self.label)
         return s
 
 
@@ -109,8 +120,11 @@ class InputFeatures(object):
                  segment_ids,
                  start_position=None,
                  end_position=None,
-                 is_impossible=None):
+                 is_impossible=None,
+                 label=None,
+                 orig_id = 0):
         self.unique_id = unique_id
+        self.orig_id = orig_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
         self.tokens = tokens
@@ -122,25 +136,11 @@ class InputFeatures(object):
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
-
-    def __str__(self):
-        return self.__repr__()
-
-    def __repr__(self):
-        s = ""
-        s += "unique_id: %s" % (self.unique_id)
-        s += ", example_index: %s" % (self.example_index)
-        s += ", doc_span_index: %s" % (self.doc_span_index)
-        s += ", tokens: %s" % (self.tokens)
-        s += ", token_to_orig_map: %s" % (self.token_to_orig_map)
-        s += ", token_is_max_context: %s" % (self.token_is_max_context)
-        s += ", start_position: %s" % (self.start_position)
-        s += ", end_position: %s" % (self.end_position)
-        return s
+        self.label=label
 
 
 def read_squad_examples(input_file, is_training, version_2_with_negative):
-    """Read a SQuAD json file into a list of SquadExample."""
+    """Read a SQuAD json file into a list of BabiExample."""
     with open(input_file, "r", encoding='utf-8') as reader:
         input_data = json.load(reader)["data"]
 
@@ -150,6 +150,7 @@ def read_squad_examples(input_file, is_training, version_2_with_negative):
         return False
 
     examples = []
+    i2w, w2i, vlen = get_vocabs()
     for entry in input_data:
         for paragraph in entry["paragraphs"]:
             paragraph_text = paragraph["context"]
@@ -174,6 +175,7 @@ def read_squad_examples(input_file, is_training, version_2_with_negative):
                 end_position = None
                 orig_answer_text = None
                 is_impossible = False
+                tlabel = w2i[qa['answers'][0]['text']]
                 if is_training:
                     if version_2_with_negative:
                         is_impossible = qa["is_impossible"]
@@ -185,6 +187,7 @@ def read_squad_examples(input_file, is_training, version_2_with_negative):
                         orig_answer_text = answer["text"]
                         answer_offset = answer["answer_start"]
                         answer_length = len(orig_answer_text)
+                        
                         start_position = char_to_word_offset[answer_offset]
                         end_position = char_to_word_offset[answer_offset + answer_length - 1]
                         # Only add answers where the text can be exactly recovered from the
@@ -197,22 +200,24 @@ def read_squad_examples(input_file, is_training, version_2_with_negative):
                         cleaned_answer_text = " ".join(
                             whitespace_tokenize(orig_answer_text))
                         if actual_text.find(cleaned_answer_text) == -1:
-                            logger.warning("Could not find answer: '%s' vs. '%s'",
-                                           actual_text, cleaned_answer_text)
-                            continue
+                            #logger.warning("Could not find answer: '%s' vs. '%s'",
+                            #               actual_text, cleaned_answer_text)
+                            start_position = 0
+                            end_position=0
                     else:
                         start_position = -1
                         end_position = -1
                         orig_answer_text = ""
 
-                example = SquadExample(
+                example = BabiExample(
                     qas_id=qas_id,
                     question_text=question_text,
                     doc_tokens=doc_tokens,
                     orig_answer_text=orig_answer_text,
                     start_position=start_position,
                     end_position=end_position,
-                    is_impossible=is_impossible)
+                    is_impossible=is_impossible,
+                    label=tlabel)
                 examples.append(example)
     return examples
 
@@ -336,34 +341,11 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             if is_training and example.is_impossible:
                 start_position = 0
                 end_position = 0
-            if example_index < 20:
-                logger.info("*** Example ***")
-                logger.info("unique_id: %s" % (unique_id))
-                logger.info("example_index: %s" % (example_index))
-                logger.info("doc_span_index: %s" % (doc_span_index))
-                logger.info("tokens: %s" % " ".join(tokens))
-                logger.info("token_to_orig_map: %s" % " ".join([
-                    "%d:%d" % (x, y) for (x, y) in token_to_orig_map.items()]))
-                logger.info("token_is_max_context: %s" % " ".join([
-                    "%d:%s" % (x, y) for (x, y) in token_is_max_context.items()
-                ]))
-                logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-                logger.info(
-                    "input_mask: %s" % " ".join([str(x) for x in input_mask]))
-                logger.info(
-                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-                if is_training and example.is_impossible:
-                    logger.info("impossible example")
-                if is_training and not example.is_impossible:
-                    answer_text = " ".join(tokens[start_position:(end_position + 1)])
-                    logger.info("start_position: %d" % (start_position))
-                    logger.info("end_position: %d" % (end_position))
-                    logger.info(
-                        "answer: %s" % (answer_text))
 
             features.append(
                 InputFeatures(
                     unique_id=unique_id,
+                    orig_id=example.qas_id,
                     example_index=example_index,
                     doc_span_index=doc_span_index,
                     tokens=tokens,
@@ -374,7 +356,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                     segment_ids=segment_ids,
                     start_position=start_position,
                     end_position=end_position,
-                    is_impossible=example.is_impossible))
+                    is_impossible=example.is_impossible,
+                    label=example.label))
             unique_id += 1
 
     return features
@@ -455,7 +438,7 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
 
 
 RawResult = collections.namedtuple("RawResult",
-                                   ["unique_id", "start_logits", "end_logits"])
+                                   ["unique_id", "logits"])
 
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
@@ -476,7 +459,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
     _PrelimPrediction = collections.namedtuple(  # pylint: disable=invalid-name
         "PrelimPrediction",
-        ["feature_index", "start_index", "end_index", "start_logit", "end_logit"])
+        ["feature_index", "logit"])
 
     all_predictions = collections.OrderedDict()
     all_nbest_json = collections.OrderedDict()
@@ -496,30 +479,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             start_indexes = _get_best_indexes(result.start_logits, n_best_size)
             end_indexes = _get_best_indexes(result.end_logits, n_best_size)
             # if we could have irrelevant answers, get the min score of irrelevant
-            if version_2_with_negative:
-                feature_null_score = result.start_logits[0] + result.end_logits[0]
-                if feature_null_score < score_null:
-                    score_null = feature_null_score
-                    min_null_feature_index = feature_index
-                    null_start_logit = result.start_logits[0]
-                    null_end_logit = result.end_logits[0]
             for start_index in start_indexes:
                 for end_index in end_indexes:
-                    # We could hypothetically create invalid predictions, e.g., predict
-                    # that the start of the span is in the question. We throw out all
-                    # invalid predictions.
-                    if start_index >= len(feature.tokens):
-                        continue
-                    if end_index >= len(feature.tokens):
-                        continue
-                    if start_index not in feature.token_to_orig_map:
-                        continue
-                    if end_index not in feature.token_to_orig_map:
-                        continue
-                    if not feature.token_is_max_context.get(start_index, False):
-                        continue
-                    if end_index < start_index:
-                        continue
                     length = end_index - start_index + 1
                     if length > max_answer_length:
                         continue
@@ -544,7 +505,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             reverse=True)
 
         _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
-            "NbestPrediction", ["text", "start_logit", "end_logit", "start", "end"])
+            "NbestPrediction", ["text", "start_logit", "end_logit"])
 
         seen_predictions = {}
         nbest = []
@@ -581,9 +542,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 _NbestPrediction(
                     text=final_text,
                     start_logit=pred.start_logit,
-                    end_logit=pred.end_logit,
-                    start=pred.start_index,
-                    end=pred.end_index))
+                    end_logit=pred.end_logit))
         # if we didn't include the empty option in the n-best, include it
         if version_2_with_negative:
             if "" not in seen_predictions:
@@ -591,15 +550,19 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                     _NbestPrediction(
                         text="",
                         start_logit=null_start_logit,
-                        end_logit=null_end_logit,
-                        start=null_start_logit,
-                        end=null_end_logit))
+                        end_logit=null_end_logit))
                 
             # In very rare edge cases we could only have single null prediction.
             # So we just create a nonce prediction in this case to avoid failure.
             if len(nbest)==1:
                 nbest.insert(0,
                     _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0))
+                
+        # In very rare edge cases we could have no valid predictions. So we
+        # just create a nonce prediction in this case to avoid failure.
+        if not nbest:
+            nbest.append(
+                _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0))
 
         assert len(nbest) >= 1
 
@@ -620,8 +583,6 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             output["probability"] = probs[i]
             output["start_logit"] = entry.start_logit
             output["end_logit"] = entry.end_logit
-            output["start"] = entry.start
-            output["end"] = entry.end
             nbest_json.append(output)
 
         assert len(nbest_json) >= 1
@@ -854,12 +815,10 @@ def main():
     parser.add_argument('--null_score_diff_threshold',
                         type=float, default=0.0,
                         help="If null_score - best_non_null is greater than the threshold predict null.")
-    parser.add_argument('--single_sample',
-                        action='store_true',
-                        help="Whether to just evaluate on a single sample and output layer information")
-
     args = parser.parse_args()
 
+
+    i2w, w2i,vlen=get_vocabs()
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
@@ -914,8 +873,9 @@ def main():
             num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
     # Prepare model
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model,
-                cache_dir=os.path.join(PYTORCH_PRETRAINED_BERT_CACHE, 'distributed_{}'.format(args.local_rank)))
+    #print(PYTORCH_PRETRAINED_BERT_CACHE)
+    model = BertForSequenceClassification.from_pretrained(args.bert_model, vlen,
+                cache_dir=os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed_{}'.format(args.local_rank)))
 
     if args.fp16:
         model.half()
@@ -964,8 +924,6 @@ def main():
                              warmup=args.warmup_proportion,
                              t_total=num_train_optimization_steps)
 
-    tb_writer = SummaryWriter()
-
     global_step = 0
     if args.do_train:
         cached_train_features_file = args.train_file+'_{0}_{1}_{2}_{3}'.format(
@@ -996,27 +954,61 @@ def main():
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
         all_start_positions = torch.tensor([f.start_position for f in train_features], dtype=torch.long)
         all_end_positions = torch.tensor([f.end_position for f in train_features], dtype=torch.long)
+        all_labels = torch.tensor([f.label for f in train_features], dtype=torch.long)
+        
         train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-                                   all_start_positions, all_end_positions)
+                                   all_start_positions, all_end_positions, all_labels)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
             train_sampler = DistributedSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
+        eval_examples = read_squad_examples(
+            input_file=args.predict_file, is_training=False, version_2_with_negative=args.version_2_with_negative)
+        eval_features = convert_examples_to_features(
+            examples=eval_examples,
+            tokenizer=tokenizer,
+            max_seq_length=args.max_seq_length,
+            doc_stride=args.doc_stride,
+            max_query_length=args.max_query_length,
+            is_training=False)
+
+
+
+        all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
+        all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
+        all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+        all_example_index = torch.arange(all_input_ids.size(0), dtype=torch.long)
+        #all_start_positions = torch.tensor([f.start_position for f in eval_features], dtype=torch.long)
+        #all_end_positions = torch.tensor([f.end_position for f in eval_features], dtype=torch.long)
+        all_labels = torch.tensor([f.label for f in eval_features], dtype=torch.long)
+        
+        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_example_index, all_labels)
+        
+        # Run prediction for full data
+        eval_sampler = SequentialSampler(eval_data)
+        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size)
+        
+
+
+
         model.train()
+
+
+        
+        ep = 0
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
+            ep += 1
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 if n_gpu == 1:
                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
-                input_ids, input_mask, segment_ids, start_positions, end_positions = batch
-                loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
+                input_ids, input_mask, segment_ids, start_positions, end_positions, labels = batch
+                loss = model(input_ids, segment_ids, input_mask, labels)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
-
-                tb_writer.add_scalar('data/train/loss', loss.item(), global_step)
 
                 if args.fp16:
                     optimizer.backward(loss)
@@ -1032,7 +1024,37 @@ def main():
                     optimizer.step()
                     optimizer.zero_grad()
                     global_step += 1
+            if args.do_predict and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
 
+                logger.info("***** Running predictions *****")
+                logger.info("  Num orig examples = %d", len(eval_examples))
+                logger.info("  Num split examples = %d", len(eval_features))
+                logger.info("  Batch size = %d", args.predict_batch_size)
+                
+                model.eval()
+                all_results = []
+                logger.info("Start evaluating")
+                for input_ids, input_mask, segment_ids, example_indices, labels in tqdm(eval_dataloader, desc="Evaluating"):
+                    if len(all_results) % 1000 == 0:
+                        logger.info("Processing example: %d" % (len(all_results)))
+                    input_ids = input_ids.to(device)
+                    input_mask = input_mask.to(device)
+                    segment_ids = segment_ids.to(device)
+                    with torch.no_grad():
+                        batch_logits = model(input_ids, segment_ids, input_mask)
+                    for i, example_index in enumerate(example_indices):
+                        logits = batch_logits[i]
+                        eval_feature = eval_features[example_index.item()]
+                        uid = eval_feature.orig_id
+                        #print(eval_feature.orig_id)
+                        all_results.append({uid:i2w[torch.argmax(logits).item()]})
+
+                model_to_save = model.module if hasattr(model, 'module') else model
+                output_prediction_file = os.path.join(args.output_dir, "predictions_{}.json".format(ep))
+                json.dump(all_results, open(output_prediction_file, 'w'))
+                output_model_file = os.path.join(args.output_dir, "model_checkpoint_{}".format(ep))
+                torch.save(model_to_save.state_dict(), output_model_file)
+                model.train()
     if args.do_train:
         # Save a trained model and the associated configuration
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
@@ -1044,81 +1066,42 @@ def main():
 
         # Load a trained model and config that you have fine-tuned
         config = BertConfig(output_config_file)
-        model = BertForQuestionAnswering(config)
+        model = BertForSequenceClassification(config, vlen)
         model.load_state_dict(torch.load(output_model_file))
     else:
-        model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+        model = BertForSequenceClassification.from_pretrained(args.bert_model, vlen)
 
     model.to(device)
 
     if args.do_predict and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
-        eval_examples = read_squad_examples(
-            input_file=args.predict_file, is_training=False, version_2_with_negative=args.version_2_with_negative)
-
-        eval_features = convert_examples_to_features(
-            examples=eval_examples,
-            tokenizer=tokenizer,
-            max_seq_length=args.max_seq_length,
-            doc_stride=args.doc_stride,
-            max_query_length=args.max_query_length,
-            is_training=False)
 
         logger.info("***** Running predictions *****")
         logger.info("  Num orig examples = %d", len(eval_examples))
         logger.info("  Num split examples = %d", len(eval_features))
         logger.info("  Batch size = %d", args.predict_batch_size)
-
-        all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-        all_example_index = torch.arange(all_input_ids.size(0), dtype=torch.long)
-        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_example_index)
-        # Run prediction for full data
-        eval_sampler = SequentialSampler(eval_data)
-        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size)
-
+        
         model.eval()
         all_results = []
-
         logger.info("Start evaluating")
-        for input_ids, input_mask, segment_ids, example_indices in tqdm(eval_dataloader, desc="Evaluating"):
-
+        for input_ids, input_mask, segment_ids, example_indices, labels in tqdm(eval_dataloader, desc="Evaluating"):
             if len(all_results) % 1000 == 0:
                 logger.info("Processing example: %d" % (len(all_results)))
             input_ids = input_ids.to(device)
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
-                batch_start_logits, batch_end_logits, embedding_output, encoded_layers = model(input_ids, segment_ids, input_mask)
-
+                batch_logits = model(input_ids, segment_ids, input_mask)
             for i, example_index in enumerate(example_indices):
-                start_logits = batch_start_logits[i].detach().cpu().tolist()
-                end_logits = batch_end_logits[i].detach().cpu().tolist()
+                logits = batch_logits[i]
                 eval_feature = eval_features[example_index.item()]
-                unique_id = int(eval_feature.unique_id)
-                all_results.append(RawResult(unique_id=unique_id,
-                                             start_logits=start_logits,
-                                             end_logits=end_logits))
+                uid = eval_feature.orig_id
+                all_results.append({uid:i2w[torch.argmax(logits).item()]})
 
-            if args.single_sample:
-                torch.save(input_ids, "inputs.pkl")
-                torch.save(embedding_output, "embedding.pkl")
-                torch.save(encoded_layers, "encoded_layers.pkl")
-
-                sample_info = ""
-                sample_info += str(eval_features[0].tokens)
-
-                with open("tokens.txt", "w", encoding="utf-8") as sample_file:
-                    sample_file.write(sample_info)
-
-        output_prediction_file = os.path.join(args.output_dir, "predictions.json")
-        output_nbest_file = os.path.join(args.output_dir, "nbest_predictions.json")
-        output_null_log_odds_file = os.path.join(args.output_dir, "null_odds.json")
-        write_predictions(eval_examples, eval_features, all_results,
-                          args.n_best_size, args.max_answer_length,
-                          args.do_lower_case, output_prediction_file,
-                          output_nbest_file, output_null_log_odds_file, args.verbose_logging,
-                          args.version_2_with_negative, args.null_score_diff_threshold)
+        model_to_save = model.module if hasattr(model, 'module') else model
+        output_prediction_file = os.path.join(args.output_dir, "predictions_{}.json".format(ep))
+        json.dump(all_results, open(output_prediction_file, 'w'))
+        output_model_file = os.path.join(args.output_dir, "model_checkpoint_{}".format(ep))
+        torch.save(model_to_save.state_dict(), output_model_file)
 
 
 if __name__ == "__main__":
