@@ -48,9 +48,9 @@ else:
 
 from tensorboardX import SummaryWriter
 
-logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt = '%m/%d/%Y %H:%M:%S',
-                    level = logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                    datefmt='%m/%d/%Y %H:%M:%S',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -548,6 +548,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
         seen_predictions = {}
         nbest = []
+
         for pred in prelim_predictions:
             if len(nbest) >= n_best_size:
                 break
@@ -592,14 +593,14 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                         text="",
                         start_logit=null_start_logit,
                         end_logit=null_end_logit,
-                        start=null_start_logit,
-                        end=null_end_logit))
-                
+                        start=0.0,
+                        end=0.0))
+
             # In very rare edge cases we could only have single null prediction.
             # So we just create a nonce prediction in this case to avoid failure.
-            if len(nbest)==1:
+            if len(nbest) == 1:
                 nbest.insert(0,
-                    _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0))
+                             _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0, start=0.0, end=0.0))
 
         assert len(nbest) >= 1
 
@@ -628,6 +629,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
         if not version_2_with_negative:
             all_predictions[example.qas_id] = nbest_json[0]["text"]
+            all_nbest_json[example.qas_id] = nbest_json
         else:
             # predict "" iff the null score - the score of best non-null > threshold
             score_diff = score_null - best_non_null_entry.start_logit - (
@@ -780,14 +782,15 @@ def _compute_softmax(scores):
         probs.append(score / total_sum)
     return probs
 
+
 def main():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
     parser.add_argument("--bert_model", default=None, type=str, required=True,
                         help="Bert pre-trained model selected in the list: bert-base-uncased, "
-                        "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
-                        "bert-base-multilingual-cased, bert-base-chinese.")
+                             "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
+                             "bert-base-multilingual-cased, bert-base-chinese.")
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model checkpoints and predictions will be written.")
 
@@ -854,9 +857,11 @@ def main():
     parser.add_argument('--null_score_diff_threshold',
                         type=float, default=0.0,
                         help="If null_score - best_non_null is greater than the threshold predict null.")
-    parser.add_argument('--single_sample',
+    parser.add_argument('--eval_single_sample',
                         action='store_true',
                         help="Whether to just evaluate on a single sample and output layer information")
+    parser.add_argument("--sample_output_dir", default=None, type=str, required=False,
+                        help="The output directory where the single sample files will be written.")
 
     args = parser.parse_args()
 
@@ -874,7 +879,7 @@ def main():
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
-                            args.gradient_accumulation_steps))
+            args.gradient_accumulation_steps))
 
     args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
@@ -901,6 +906,9 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
+    if args.eval_single_sample and not os.path.exists(args.sample_output_dir):
+        os.makedirs(args.sample_output_dir)
+
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
 
     train_examples = None
@@ -915,7 +923,8 @@ def main():
 
     # Prepare model
     model = BertForQuestionAnswering.from_pretrained(args.bert_model,
-                cache_dir=os.path.join(PYTORCH_PRETRAINED_BERT_CACHE, 'distributed_{}'.format(args.local_rank)))
+                                                     cache_dir=os.path.join(PYTORCH_PRETRAINED_BERT_CACHE,
+                                                                            'distributed_{}'.format(args.local_rank)))
 
     if args.fp16:
         model.half()
@@ -924,7 +933,8 @@ def main():
         try:
             from apex.parallel import DistributedDataParallel as DDP
         except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+            raise ImportError(
+                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
         model = DDP(model)
     elif n_gpu > 1:
@@ -941,14 +951,15 @@ def main():
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-        ]
+    ]
 
     if args.fp16:
         try:
             from apex.optimizers import FP16_Optimizer
             from apex.optimizers import FusedAdam
         except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+            raise ImportError(
+                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
         optimizer = FusedAdam(optimizer_grouped_parameters,
                               lr=args.learning_rate,
@@ -968,8 +979,9 @@ def main():
 
     global_step = 0
     if args.do_train:
-        cached_train_features_file = args.train_file+'_{0}_{1}_{2}_{3}'.format(
-            list(filter(None, args.bert_model.split('/'))).pop(), str(args.max_seq_length), str(args.doc_stride), str(args.max_query_length))
+        cached_train_features_file = args.train_file + '_{0}_{1}_{2}_{3}'.format(
+            list(filter(None, args.bert_model.split('/'))).pop(), str(args.max_seq_length), str(args.doc_stride),
+            str(args.max_query_length))
         train_features = None
         try:
             with open(cached_train_features_file, "rb") as reader:
@@ -1008,11 +1020,11 @@ def main():
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 if n_gpu == 1:
-                    batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
+                    batch = tuple(t.to(device) for t in batch)  # multi-gpu does scattering it-self
                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
                 loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
                 if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
+                    loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
 
@@ -1026,17 +1038,19 @@ def main():
                     if args.fp16:
                         # modify learning rate with special warm up BERT uses
                         # if args.fp16 is False, BertAdam is used and handles this automatically
-                        lr_this_step = args.learning_rate * warmup_linear(global_step/num_train_optimization_steps, args.warmup_proportion)
+                        lr_this_step = args.learning_rate * warmup_linear(global_step / num_train_optimization_steps,
+                                                                          args.warmup_proportion)
                         for param_group in optimizer.param_groups:
                             param_group['lr'] = lr_this_step
                     optimizer.step()
                     optimizer.zero_grad()
                     global_step += 1
 
+    output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
+
     if args.do_train:
         # Save a trained model and the associated configuration
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
-        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
         torch.save(model_to_save.state_dict(), output_model_file)
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
         with open(output_config_file, 'w') as f:
@@ -1045,9 +1059,12 @@ def main():
         # Load a trained model and config that you have fine-tuned
         config = BertConfig(output_config_file)
         model = BertForQuestionAnswering(config)
-        model.load_state_dict(torch.load(output_model_file))
+
     else:
+        # Load a trained model that you have fine-tuned
         model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+
+    model.load_state_dict(torch.load(output_model_file))
 
     model.to(device)
 
@@ -1089,7 +1106,8 @@ def main():
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
-                batch_start_logits, batch_end_logits, embedding_output, encoded_layers = model(input_ids, segment_ids, input_mask)
+                batch_start_logits, batch_end_logits, embedding_output, encoded_layers = model(input_ids, segment_ids,
+                                                                                               input_mask)
 
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
@@ -1100,20 +1118,30 @@ def main():
                                              start_logits=start_logits,
                                              end_logits=end_logits))
 
-            if args.single_sample:
-                torch.save(input_ids, "inputs.pkl")
-                torch.save(embedding_output, "embedding.pkl")
-                torch.save(encoded_layers, "encoded_layers.pkl")
+            if args.eval_single_sample:
+                inputs_file = os.path.join(args.sample_output_dir, "inputs.pkl")
+                embedding_file = os.path.join(args.sample_output_dir, "embedding.pkl")
+                layers_file = os.path.join(args.sample_output_dir, "encoded_layers.pkl")
+                tokens_file = os.path.join(args.sample_output_dir, "tokens.txt")
 
-                sample_info = ""
-                sample_info += str(eval_features[0].tokens)
+                torch.save(input_ids, inputs_file)
+                torch.save(embedding_output, embedding_file)
+                torch.save(encoded_layers, layers_file)
 
-                with open("tokens.txt", "w", encoding="utf-8") as sample_file:
+                sample_info = str(eval_features[0].tokens)
+
+                with open(tokens_file, "w", encoding="utf-8") as sample_file:
                     sample_file.write(sample_info)
 
         output_prediction_file = os.path.join(args.output_dir, "predictions.json")
         output_nbest_file = os.path.join(args.output_dir, "nbest_predictions.json")
         output_null_log_odds_file = os.path.join(args.output_dir, "null_odds.json")
+
+        if args.eval_single_sample:
+            output_prediction_file = os.path.join(args.sample_output_dir, "predictions.json")
+            output_nbest_file = os.path.join(args.sample_output_dir, "nbest_predictions.json")
+            output_null_log_odds_file = os.path.join(args.sample_output_dir, "null_odds.json")
+
         write_predictions(eval_examples, eval_features, all_results,
                           args.n_best_size, args.max_answer_length,
                           args.do_lower_case, output_prediction_file,
