@@ -35,6 +35,31 @@ def plot(sample, x, title, path):
     save_and_close_plot(os.path.join(path, 'colored_plots'), title)
 
 
+def plot(sample, x, title, path):
+    tokens = sample["tokens"]
+
+    pca = PCA(n_components=2)
+    reduced = pca.fit_transform(x)
+
+    coords = reduced.transpose()
+
+    for i, val in enumerate(coords[0]):
+        x = coords[0][i]
+        y = coords[1][i]
+
+        col = get_color_for_token(i, sample)
+
+        plt.scatter(x, y, c=col)
+
+        if i < len(tokens):
+            plt.text(x + 0.1, y + 0.1, tokens[i], fontsize=6)
+        else:
+            plt.text(x + 0.1, y + 0.1, "PAD", fontsize=6)
+
+    plt.title(title)
+    save_and_close_plot(os.path.join(path, 'colored_plots'), title)
+
+
 def plot3d(sample, x, title, path):
     tokens = sample["tokens"]
 
@@ -99,10 +124,23 @@ def get_color_for_token(i, sample):
     return col
 
 
-def read_token_file(path):
+def parse_token_file(path):
     with open(path, encoding='utf-8') as f:
         tokens = ast.literal_eval(f.read())
         return tokens
+
+
+def parse_prediction_index_range(path):
+    with open(path, encoding='utf-8') as f:
+        preds = ast.literal_eval(f.read())
+
+        for entry in preds.values():
+            r = range(int(entry[0]["start"]), int(entry[0]["end"] + 1))
+            return r
+
+
+def get_question_range(tokens):
+    return range(1, tokens.index("[SEP]"))
 
 
 def main():
@@ -122,11 +160,17 @@ def main():
     inputs_file = os.path.join(path, "inputs.pkl")
     embedding_file = os.path.join(path, "embedding.pkl")
     layers_file = os.path.join(path, "encoded_layers.pkl")
+    predictions_file = os.path.join(path, "nbest_predictions.json")
 
     sample_info = samples[args.sample_name] if args.sample_name in samples else {}
 
-    tokens = read_token_file(tokens_file)
+    tokens = parse_token_file(tokens_file)
+    pred_index = parse_prediction_index_range(predictions_file)
+    question_parts = get_question_range(tokens)
+
     sample_info["tokens"] = tokens
+    sample_info["pred_index"] = pred_index
+    sample_info["question_parts"] = [question_parts]
 
     inputs = torch.load(inputs_file, map_location='cpu')
     embedding = torch.load(embedding_file, map_location='cpu')[0]
