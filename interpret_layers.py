@@ -156,13 +156,16 @@ def plot_kmeans(sample, x, reduce_method, title, path):
     save_and_close_plot(os.path.join(path, 'kmeans'), title)
 
 
-def print_kmeans(sample, x, title):
+def build_kmeans(sample, x, title):
     tokens = sample["tokens"]
 
     kmeans = KMeans(n_clusters=10)
     kmeans.fit(x)
 
     clusters = {}
+
+    summary = ""
+
     for i, label in enumerate(kmeans.labels_):
         if label not in clusters:
             clusters[label] = []
@@ -172,10 +175,12 @@ def print_kmeans(sample, x, title):
             word = "*{}*".format(word)
         clusters[label].append(word)
 
-    print(title)
+    summary += title + "\n"
 
     for cluster in clusters.values():
-        print(cluster)
+        summary += str(cluster) + "\n"
+
+    return summary
 
 
 def plot_parts(sample, x, reduce_method, title, path):

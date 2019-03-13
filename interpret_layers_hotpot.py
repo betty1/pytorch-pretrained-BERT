@@ -1,4 +1,4 @@
-from interpret_layers import plot, print_kmeans, load_representations, get_cut_index, get_question_range, \
+from interpret_layers import plot, build_kmeans, load_representations, get_cut_index, get_question_range, \
     parse_token_file, parse_prediction_index_range, get_support_range
 import os
 import argparse
@@ -43,16 +43,21 @@ def main():
 
     cut_index = get_cut_index(inputs, tokens)
 
+    kmeans_summary = ""
+
     if not args.no_embedding:
         title = "embedding"
         plot(sample_info, embedding[:cut_index], "pca", title, path, args.plot_3d)
-        print_kmeans(sample_info, embedding[:cut_index], title)
+        kmeans_summary += build_kmeans(sample_info, embedding[:cut_index], title)
 
     if not args.no_layers:
         for i, layer in enumerate(layers):
             title = "layer" + str(i)
             plot(sample_info, layer[0][:cut_index], "pca", title, path, args.plot_3d)
-            print_kmeans(sample_info, layer[0][:cut_index], title)
+            kmeans_summary += build_kmeans(sample_info, layer[0][:cut_index], title)
+
+    with open(os.path.join(path, "kmeans_clusters.txt"), "w") as cluster_file:
+        cluster_file.write(kmeans_summary)
 
 
 if __name__ == "__main__":
