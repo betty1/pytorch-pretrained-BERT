@@ -1071,7 +1071,9 @@ def main():
     if args.do_predict and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
         eval_examples = read_squad_examples(
             input_file=args.predict_file, is_training=False, version_2_with_negative=args.version_2_with_negative)
-
+        if args.eval_single_sample:
+            eval_examples = [eval_examples[random.randint(0, len(eval_examples) - 1)]]
+            
         eval_features = convert_examples_to_features(
             examples=eval_examples,
             tokenizer=tokenizer,

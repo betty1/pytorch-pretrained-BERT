@@ -63,6 +63,7 @@ def get_vocabs():
 class BabiExample(object):
     """
     A single training/test example for the Squad dataset.
+    A single training/test example for the Squad dataset.
     For examples without an answer, the start and end position are -1.
     """
 
@@ -939,6 +940,9 @@ def main():
     if args.do_predict:
         eval_examples = read_squad_examples(
             input_file=args.predict_file, is_training=False, version_2_with_negative=args.version_2_with_negative)
+        if args.eval_single_sample:
+            eval_examples = [eval_examples[random.randint(0, len(eval_examples) - 1)]]
+            
         eval_features = convert_examples_to_features(
             examples=eval_examples,
             tokenizer=tokenizer,
@@ -946,6 +950,8 @@ def main():
             doc_stride=args.doc_stride,
             max_query_length=args.max_query_length,
             is_training=False)
+
+
 
         all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
