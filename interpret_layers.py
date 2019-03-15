@@ -42,7 +42,15 @@ def cosine(x):
     return cosine_distances(x.numpy())
 
 
-def get_color_for_token(i, sample):
+def get_color_for_token(i, sample, sentence_colored=False):
+
+    if sentence_colored:
+        num_colors = sample['tokens'].count('.') + 1
+        cm = plt.get_cmap('gist_rainbow')
+        slice = sample['tokens'][:i]
+        token_sen = slice.count('.') + slice.count('[SEP]')
+        return [cm(token_sen/num_colors)]
+    
     sp_colors = ['darkgreen', 'greenyellow', 'limegreen']
     question_colors = ['cyan', 'blue', 'dodgerblue']
 
@@ -76,14 +84,14 @@ def save_and_close_plot(plot_path, title):
     plt.clf()
 
 
-def plot(sample, x, reduce_method, title, path, plot_3d):
+def plot(sample, x, reduce_method, title, path, plot_3d, sentence_colored=False):
     if plot_3d:
-        plot3d(sample, x, reduce_method, title, path)
+        plot3d(sample, x, reduce_method, title, path, sentence_colored)
     else:
-        plot2d(sample, x, reduce_method, title, path)
+        plot2d(sample, x, reduce_method, title, path, sentence_colored)
 
 
-def plot2d(sample, x, reduce_method, title, path):
+def plot2d(sample, x, reduce_method, title, path, sentence_colored=False):
     tokens = sample["tokens"]
 
     coords = reduce(x, reduce_method, 2)
@@ -92,7 +100,7 @@ def plot2d(sample, x, reduce_method, title, path):
         x = coords[0][i]
         y = coords[1][i]
 
-        col = get_color_for_token(i, sample)
+        col = get_color_for_token(i, sample, sentence_colored)
 
         plt.scatter(x, y, c=col)
 
@@ -105,7 +113,7 @@ def plot2d(sample, x, reduce_method, title, path):
     save_and_close_plot(os.path.join(path, 'colored_plots'), title)
 
 
-def plot3d(sample, x, reduce_method, title, path):
+def plot3d(sample, x, reduce_method, title, path, sentence_colored=False):
     tokens = sample["tokens"]
 
     coords = reduce(x, reduce_method, 3)
@@ -118,7 +126,7 @@ def plot3d(sample, x, reduce_method, title, path):
         y = coords[1][i]
         z = coords[2][i]
 
-        col = get_color_for_token(i, sample)
+        col = get_color_for_token(i, sample, sentence_colored)
 
         # plt.scatter(x, y, c=col)
         ax.scatter([x], [y], [z], c=col)

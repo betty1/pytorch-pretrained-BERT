@@ -14,6 +14,11 @@ do
       --eval_single_sample \
       --sample_output_dir "../babi_samples/base_${4}/qa${t}_${i}"
     cd ../
-    python interpret_layers_babi.py --babi_task "base_${4}" --sample_name "qa${t}_${i}"
+    if [ $1 = "babi" ]
+    then
+    	python interpret_layers_babi.py --babi_task "base_${4}" --sample_name "qa${t}_${i}" --sentence_colored
+	else
+		python interpret_layers_hotpot.py --babi_task "base_${4}" --sample_name "qa${t}_${i}" --sentence_colored
+	fi
   done
 done

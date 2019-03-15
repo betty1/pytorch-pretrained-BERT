@@ -14,6 +14,7 @@ def parse_args():
     parser.add_argument('--no_embedding', action='store_true', help="Whether to plot only the embedding")
     parser.add_argument('--no_layers', action='store_true', help="Whether to plot only the layers")
     parser.add_argument('--plot_3d', action='store_true', help="Whether to plot in 3d")
+    parser.add_argument('--sentence_colored', action='store_true', help="Whether to color tokens by sentence")
 
     return parser.parse_args()
 
@@ -46,13 +47,13 @@ def main():
 
     if not args.no_embedding:
         title = "embedding"
-        plot(sample_info, embedding[:cut_index], "pca", title, path, args.plot_3d)
+        plot(sample_info, embedding[:cut_index], "pca", title, path, args.plot_3d, args.sentence_colored)
         kmeans_summary += build_kmeans(sample_info, embedding[:cut_index], title)
 
     if not args.no_layers:
         for i, layer in enumerate(layers):
             title = "layer" + str(i)
-            plot(sample_info, layer[0][:cut_index], "pca", title, path, args.plot_3d)
+            plot(sample_info, layer[0][:cut_index], "pca", title, path, args.plot_3d, args.sentence_colored)
             kmeans_summary += build_kmeans(sample_info, layer[0][:cut_index], title)
 
     with open(os.path.join(path, "kmeans_clusters.txt"), "w") as cluster_file:
