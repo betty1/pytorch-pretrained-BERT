@@ -43,14 +43,13 @@ def cosine(x):
 
 
 def get_color_for_token(i, sample, sentence_colored=False):
-
     if sentence_colored:
         num_colors = sample['tokens'].count('.') + 1
         cm = plt.get_cmap('gist_rainbow')
         slice = sample['tokens'][:i]
         token_sen = slice.count('.') + slice.count('[SEP]')
-        return [cm(token_sen/num_colors)]
-    
+        return [cm(token_sen / num_colors)]
+
     sp_colors = ['darkgreen', 'greenyellow', 'limegreen']
     question_colors = ['cyan', 'blue', 'dodgerblue']
 
@@ -89,6 +88,67 @@ def plot(sample, x, reduce_method, title, path, plot_3d, sentence_colored=False)
         plot3d(sample, x, reduce_method, title, path, sentence_colored)
     else:
         plot2d(sample, x, reduce_method, title, path, sentence_colored)
+
+
+def token_features_for_demo(token_index, token, highlighted_tokens, question_range, sup_ranges, pred_range):
+    marker = "o"
+    col = "gray"
+    size = 8
+
+    for sup_range in sup_ranges:
+        if token_index in sup_range:
+            col = "darkcyan"
+
+    if token_index in question_range:
+        marker = "*"
+        col = "orangered"
+
+    for highlighted_token in highlighted_tokens:
+        if isinstance(highlighted_token, str):
+            if token == highlighted_token:
+                size = 10
+                break
+        elif isinstance(highlighted_token, int):
+            if token_index == highlighted_token:
+                size = 10
+                break
+
+    if token_index in pred_range:
+        marker = "d"
+        col = "crimson"
+
+    return col, size, marker
+
+
+def plot_for_demo(sample, x, title, path, highlighted_tokens, sup_ranges, pred_range, reduce_method="pca"):
+    tokens = sample["tokens"]
+
+    question_range = get_question_range(tokens)
+
+    coords = reduce(x, reduce_method, 2)
+
+    for i, val in enumerate(coords[0]):
+        x = coords[0][i]
+        y = coords[1][i]
+
+        token = tokens[i]
+
+        col, size, marker = token_features_for_demo(i, token, highlighted_tokens, question_range, sup_ranges,
+                                                    pred_range)
+
+        if token == "[SEP]" or token == "[CLS]":
+            continue
+
+        plt.scatter(x, y, c=col, marker=marker)
+
+        if i < len(tokens):
+            plt.text(x + 0.1, y + 0.2, token, fontsize=size)
+
+    plt.xlabel("PC 1")
+    plt.ylabel("PC 2")
+
+    plt.title(title)
+    save_and_close_plot(os.path.join(path, 'paper_demo'), title)
 
 
 def plot2d(sample, x, reduce_method, title, path, sentence_colored=False):
@@ -309,7 +369,7 @@ def get_question_range(tokens):
     return range(1, tokens.index("[SEP]"))
 
 
-def get_support_range(tokens):
+def get_context_range(tokens):
     return range(tokens.index("[SEP]"), len(tokens) - 1)
 
 
@@ -326,3 +386,22 @@ def parse_prediction_index_range(path):
         for entry in preds.values():
             r = range(int(entry[0]["start"]), int(entry[0]["end"] + 1))
             return r
+
+
+def get_sentence_ranges(sample):
+    tokens = sample["tokens"]
+
+    start_i = tokens.index("[SEP]")
+
+    dot_indices = [i for i, x in enumerate(tokens) if x == "."]
+    sentence_ranges = []
+
+    prev_dot_index = start_i
+    for i, dot_index in enumerate(dot_indices):
+        if prev_dot_index + 1 < dot_index:
+            sentence_ranges.append(range(prev_dot_index + 1, dot_index))
+        prev_dot_index = dot_index
+
+    for r in sentence_ranges:
+        print(tokens[r[0]:r[-1] + 1])
+    return sentence_ranges
