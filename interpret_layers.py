@@ -77,7 +77,7 @@ def save_and_close_plot(plot_path, title):
     if not os.path.exists(plot_path):
         os.makedirs(plot_path)
 
-    plt.savefig(os.path.join(plot_path, title) + ".png")
+    plt.savefig(os.path.join(plot_path, title) + ".svg")
 
     # close plot
     plt.clf()
